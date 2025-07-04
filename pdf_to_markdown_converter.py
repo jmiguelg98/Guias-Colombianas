@@ -24,6 +24,8 @@ Usage:
 
 import os
 import sys
+import subprocess
+import platform
 from pathlib import Path
 from typing import Optional
 import argparse
@@ -58,34 +60,138 @@ def setup_environment():
     
     return api_key
 
+def browse_for_pdf_file() -> Optional[Path]:
+    """Try to open a file browser on macOS."""
+    try:
+        if platform.system() == "Darwin":  # macOS
+            # Use AppleScript to open file dialog
+            script = '''
+            tell application "System Events"
+                set theFile to choose file with prompt "Select a PDF file:" of type {"pdf"}
+                return POSIX path of theFile
+            end tell
+            '''
+            
+            result = subprocess.run(['osascript', '-e', script], 
+                                  capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                file_path = result.stdout.strip()
+                if file_path:
+                    return Path(file_path)
+    except Exception as e:
+        print(f"Could not open file browser: {e}")
+    
+    return None
+
 def get_pdf_path() -> Path:
     """Get PDF file path from user input."""
     while True:
-        pdf_path = input("\nEnter the full path to your PDF file: ").strip()
+        print("\n" + "="*50)
+        print("📁 PDF File Selection")
+        print("="*50)
+        print("How would you like to select your PDF file?")
+        print("1. Browse and select (opens file dialog)")
+        print("2. Enter the file path manually")
+        print()
         
-        # Remove quotes if present
+        method = input("Enter your choice (1 or 2): ").strip()
+        
+        if method == "1":
+            # Try to use file browser
+            pdf_file = browse_for_pdf_file()
+            if pdf_file and pdf_file.exists():
+                print(f"✅ Selected file: {pdf_file}")
+                return pdf_file
+            else:
+                print("❌ File selection cancelled or failed. Let's try manual entry.")
+                # Fall through to manual entry
+        
+        # Manual entry (method == "2" or fallback from method == "1")
+        print("\n💡 Tips for entering the path:")
+        print("   • You can drag and drop the file into the terminal")
+        print("   • Use Tab completion for easier typing")
+        print("   • Path should start with / or ~")
+        print("   • Example: /Users/yourname/Documents/file.pdf")
+        print("   • Or: ~/Documents/file.pdf")
+        print()
+        
+        pdf_path = input("Enter the full path to your PDF file: ").strip()
+        
+        # Debug: Show what we received
+        print(f"🔍 Debug: Received path: '{pdf_path}'")
+        
+        # Remove quotes if present (common when dragging files)
         pdf_path = pdf_path.strip('"\'')
+        print(f"🔍 Debug: After removing quotes: '{pdf_path}'")
         
-        # Convert to Path object
-        pdf_file = Path(pdf_path)
+        # Handle empty input
+        if not pdf_path:
+            print("❌ No path entered. Please try again.")
+            continue
+        
+        # Expand user home directory (~)
+        if pdf_path.startswith('~'):
+            pdf_path = os.path.expanduser(pdf_path)
+            print(f"🔍 Debug: After expanding ~: '{pdf_path}'")
+        
+        # Convert to Path object and resolve any relative paths
+        try:
+            pdf_file = Path(pdf_path).resolve()
+            print(f"🔍 Debug: Resolved path: '{pdf_file}'")
+        except Exception as e:
+            print(f"❌ Invalid path format: {e}")
+            continue
         
         # Check if file exists
         if not pdf_file.exists():
             print(f"❌ File does not exist: {pdf_file}")
+            print("🔍 Troubleshooting:")
+            print(f"   • Check if the file is at: {pdf_file}")
+            print("   • Make sure you have permission to access the file")
+            print("   • Try dragging and dropping the file into the terminal")
+            
+            # Check if parent directory exists
+            if pdf_file.parent.exists():
+                print(f"   • Parent directory exists: {pdf_file.parent}")
+                print("   • Files in that directory:")
+                try:
+                    for file in pdf_file.parent.iterdir():
+                        if file.suffix.lower() == '.pdf':
+                            print(f"     - {file.name}")
+                except Exception as e:
+                    print(f"     Error listing files: {e}")
+            else:
+                print(f"   • Parent directory does not exist: {pdf_file.parent}")
             continue
         
         # Check if it's a PDF file
         if not pdf_file.suffix.lower() == '.pdf':
             print(f"❌ File is not a PDF: {pdf_file}")
+            print(f"   File extension: {pdf_file.suffix}")
             continue
         
-        print(f"✓ PDF file found: {pdf_file}")
+        # Check if we can read the file
+        try:
+            with open(pdf_file, 'rb') as f:
+                f.read(1024)  # Try to read first 1KB
+        except PermissionError:
+            print(f"❌ Permission denied reading file: {pdf_file}")
+            continue
+        except Exception as e:
+            print(f"❌ Error reading file: {e}")
+            continue
+        
+        print(f"✅ PDF file found and accessible: {pdf_file}")
         return pdf_file
 
 def get_output_folder() -> Path:
     """Get output folder path from user input."""
     while True:
-        print("\nWhere do you want to save the markdown file?")
+        print("\n" + "="*50)
+        print("📁 Output Folder Selection")
+        print("="*50)
+        print("Where do you want to save the markdown file?")
         print("1. Same folder as the PDF file")
         print("2. Specify a different folder")
         
@@ -94,18 +200,50 @@ def get_output_folder() -> Path:
         if choice == "1":
             return None  # Will use PDF's parent directory
         elif choice == "2":
-            folder_path = input("Enter the full path to the output folder: ").strip()
-            folder_path = folder_path.strip('"\'')
+            print("\n💡 Tips for entering the folder path:")
+            print("   • You can drag and drop the folder into the terminal")
+            print("   • Use Tab completion for easier typing")
+            print("   • Example: /Users/yourname/Desktop/converted_docs")
+            print("   • Or: ~/Desktop/converted_docs")
+            print()
             
-            output_folder = Path(folder_path)
+            folder_path = input("Enter the full path to the output folder: ").strip()
+            
+            # Debug: Show what we received
+            print(f"🔍 Debug: Received folder path: '{folder_path}'")
+            
+            # Remove quotes if present
+            folder_path = folder_path.strip('"\'')
+            print(f"🔍 Debug: After removing quotes: '{folder_path}'")
+            
+            # Handle empty input
+            if not folder_path:
+                print("❌ No folder path entered. Please try again.")
+                continue
+            
+            # Expand user home directory (~)
+            if folder_path.startswith('~'):
+                folder_path = os.path.expanduser(folder_path)
+                print(f"🔍 Debug: After expanding ~: '{folder_path}'")
+            
+            # Convert to Path object and resolve
+            try:
+                output_folder = Path(folder_path).resolve()
+                print(f"🔍 Debug: Resolved folder path: '{output_folder}'")
+            except Exception as e:
+                print(f"❌ Invalid folder path format: {e}")
+                continue
             
             # Create folder if it doesn't exist
             try:
                 output_folder.mkdir(parents=True, exist_ok=True)
-                print(f"✓ Output folder ready: {output_folder}")
+                print(f"✅ Output folder ready: {output_folder}")
                 return output_folder
             except Exception as e:
                 print(f"❌ Cannot create or access folder: {e}")
+                print("🔍 Troubleshooting:")
+                print(f"   • Check if you have permission to create folders at: {output_folder}")
+                print("   • Try using a different location like ~/Desktop")
                 continue
         else:
             print("❌ Invalid choice. Please enter 1 or 2.")
@@ -248,9 +386,6 @@ def main():
             
             # Ask if user wants to open the file
             if input("\nWould you like to open the output folder? (y/n): ").lower().startswith('y'):
-                import subprocess
-                import platform
-                
                 try:
                     if platform.system() == "Darwin":  # macOS
                         subprocess.run(["open", output_folder])
