@@ -23,10 +23,13 @@ try:
     import pytesseract
     import pandas as pd
     import numpy as np
+    import openai
+    import base64
+    import requests
 except ImportError as e:
     print(f"Missing required library: {e}")
     print("Please install required packages:")
-    print("pip install PyMuPDF pdfplumber Pillow pytesseract pandas numpy")
+    print("pip install PyMuPDF pdfplumber Pillow pytesseract pandas numpy openai")
     sys.exit(1)
 
 # Configure logging
@@ -45,6 +48,8 @@ class PDFToMarkdownConverter:
         self.supported_formats = ['.pdf']
         self.output_format = '.md'
         self.used_filenames = set()  # Track used filenames to prevent conflicts
+        self.openai_api_key = None
+        self.use_ai_vision = False
         
     def extract_text_with_ocr(self, pdf_path: str) -> str:
         try:
@@ -143,18 +148,20 @@ class PDFToMarkdownConverter:
                             try:
                                 img_data = pix.tobytes("png")
                                 img_pil = Image.open(io.BytesIO(img_data))
-                                img_text = pytesseract.image_to_string(img_pil, lang='spa+eng')
                                 
-                                if img_text.strip():
+                                # Use hybrid OCR + AI processing
+                                image_content = self.process_image_hybrid(img_pil, page_num + 1, img_index + 1)
+                                
+                                if image_content and image_content != "**Error processing image**":
                                     figure_header = "\n\n### Figure " + str(img_index + 1) + " (Page " + str(page_num + 1) + ")\n\n"
-                                    ocr_content = "**Image Content (OCR):**\n" + img_text.strip() + "\n\n"
-                                    figure_content = figure_header + ocr_content
+                                    figure_content = figure_header + image_content + "\n\n"
                                     image_descriptions.append(figure_content)
+                                    
                             except Exception as img_error:
                                 logger.warning(f"Could not process image {img_index} on page {page_num + 1}: {img_error}")
                                 # Add placeholder for unprocessable image
                                 figure_header = "\n\n### Figure " + str(img_index + 1) + " (Page " + str(page_num + 1) + ")\n\n"
-                                placeholder_content = "**Image detected but could not be processed for OCR**\n\n"
+                                placeholder_content = "**Image detected but could not be processed**\n\n"
                                 figure_content = figure_header + placeholder_content
                                 image_descriptions.append(figure_content)
                         
@@ -170,6 +177,123 @@ class PDFToMarkdownConverter:
             logger.error(f"Error extracting images from {pdf_path}: {e}")
             
         return image_descriptions
+    
+    def set_openai_key(self, api_key: str):
+        """Set OpenAI API key for AI vision processing"""
+        self.openai_api_key = api_key
+        self.use_ai_vision = True
+        openai.api_key = api_key
+    
+    def is_likely_flowchart(self, img_pil: Image.Image) -> bool:
+        """Detect if image is likely a flowchart or diagram"""
+        try:
+            # Basic heuristics for flowchart detection
+            width, height = img_pil.size
+            aspect_ratio = width / height
+            
+            # Flowcharts often have certain characteristics
+            if width < 200 or height < 200:  # Too small
+                return False
+                
+            # Check if image has geometric shapes (basic detection)
+            # This is a simple heuristic - flowcharts tend to have structured layouts
+            return 0.5 <= aspect_ratio <= 3.0  # Reasonable aspect ratio for flowcharts
+        except:
+            return False
+    
+    def get_ai_image_description(self, img_pil: Image.Image, page_num: int, img_index: int) -> str:
+        """Get AI description of image using OpenAI GPT-4 Vision"""
+        try:
+            if not self.use_ai_vision or not self.openai_api_key:
+                return ""
+                
+            # Convert PIL image to base64
+            import io
+            buffer = io.BytesIO()
+            img_pil.save(buffer, format='PNG')
+            img_base64 = base64.b64encode(buffer.getvalue()).decode()
+            
+            # Prepare the API request
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.openai_api_key}"
+            }
+            
+            payload = {
+                "model": "gpt-4-vision-preview",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Analyze this medical image from Colombian clinical guidelines. If it's a flowchart or decision tree, describe the clinical workflow, decision points, patient pathways, and recommendations. If it's text or other content, extract and describe all visible information. Focus on clinical relevance and workflow logic."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 500
+            }
+            
+            response = requests.post("https://api.openai.com/v1/chat/completions", 
+                                   headers=headers, json=payload, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                description = result['choices'][0]['message']['content']
+                logger.info(f"AI vision successful for image {img_index} on page {page_num}")
+                return description
+            else:
+                logger.warning(f"AI vision API error for image {img_index} on page {page_num}: {response.status_code}")
+                return ""
+                
+        except Exception as e:
+            logger.error(f"Error in AI vision processing for image {img_index} on page {page_num}: {e}")
+            return ""
+    
+    def process_image_hybrid(self, img_pil: Image.Image, page_num: int, img_index: int) -> str:
+        """Process image with hybrid OCR + AI approach"""
+        try:
+            # Step 1: Try OCR first
+            ocr_text = pytesseract.image_to_string(img_pil, lang='spa+eng').strip()
+            
+            # Step 2: Check if we should use AI vision
+            use_ai = False
+            reason = ""
+            
+            if self.is_likely_flowchart(img_pil):
+                use_ai = True
+                reason = "Detected flowchart/diagram"
+            elif len(ocr_text) < 20:  # Poor OCR results
+                use_ai = True
+                reason = "Poor OCR results"
+            
+            # Step 3: Get AI description if needed
+            if use_ai and self.use_ai_vision:
+                logger.info(f"Using AI vision for image {img_index} on page {page_num}: {reason}")
+                ai_description = self.get_ai_image_description(img_pil, page_num, img_index)
+                
+                if ai_description:
+                    content = f"**AI Analysis:** {ai_description}"
+                    if ocr_text:  # Include OCR text if available
+                        content += f"\n\n**OCR Text:** {ocr_text}"
+                    return content
+            
+            # Step 4: Fall back to OCR or placeholder
+            if ocr_text:
+                return f"**OCR Text:** {ocr_text}"
+            else:
+                return "**Image detected but could not be processed**"
+                
+        except Exception as e:
+            logger.error(f"Error in hybrid image processing: {e}")
+            return "**Error processing image**"
     
     def extract_metadata(self, pdf_path: str) -> Dict[str, str]:
         metadata = {
@@ -421,12 +545,13 @@ class PDFToMarkdownConverter:
 class PDFConverterGUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("PDF to Markdown Converter - FIXED VERSION (No Overwrites)")
+        self.root.title("PDF to Markdown Converter - AI ENHANCED (Flowcharts + No Overwrites)")
         self.root.geometry("600x500")
         
         self.converter = PDFToMarkdownConverter()
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar()
+        self.openai_key = tk.StringVar()
         
         self.setup_ui()
         
@@ -434,12 +559,12 @@ class PDFConverterGUI:
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky="nsew")
         
-        title_label = ttk.Label(main_frame, text="PDF to Markdown Converter - FIXED", 
+        title_label = ttk.Label(main_frame, text="PDF to Markdown Converter - AI ENHANCED", 
                                font=('Arial', 16, 'bold'))
         title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
         
-        warning_label = ttk.Label(main_frame, text="⚠️ This version prevents filename conflicts!", 
-                                 font=('Arial', 10), foreground='red')
+        warning_label = ttk.Label(main_frame, text="🤖 AI Vision for flowcharts + No filename conflicts!", 
+                                 font=('Arial', 10), foreground='green')
         warning_label.grid(row=1, column=0, columnspan=3, pady=(0, 10))
         
         ttk.Label(main_frame, text="Input Directory (PDFs):").grid(row=2, column=0, sticky=tk.W, pady=5)
@@ -450,18 +575,29 @@ class PDFConverterGUI:
         ttk.Entry(main_frame, textvariable=self.output_dir, width=50).grid(row=3, column=1, padx=5, pady=5)
         ttk.Button(main_frame, text="Browse", command=self.select_output_dir).grid(row=3, column=2, pady=5)
         
-        convert_button = ttk.Button(main_frame, text="Convert PDFs (SAFE MODE)", command=self.start_conversion)
-        convert_button.grid(row=4, column=0, columnspan=3, pady=20)
+        # OpenAI API Key section
+        ai_frame = ttk.LabelFrame(main_frame, text="🤖 AI Vision (Optional - for Flowcharts)", padding="5")
+        ai_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=10)
+        
+        ttk.Label(ai_frame, text="OpenAI API Key:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        key_entry = ttk.Entry(ai_frame, textvariable=self.openai_key, width=50, show="*")
+        key_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(ai_frame, text="✅ Enhances flowchart analysis", font=('Arial', 9)).grid(row=1, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(ai_frame, text="✅ Hybrid: OCR first, AI for complex images", font=('Arial', 9)).grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        
+        convert_button = ttk.Button(main_frame, text="Convert PDFs (AI-Enhanced)", command=self.start_conversion)
+        convert_button.grid(row=5, column=0, columnspan=3, pady=20)
         
         self.progress_var = tk.StringVar()
-        self.progress_var.set("Ready to convert - No overwrites!")
-        ttk.Label(main_frame, textvariable=self.progress_var).grid(row=5, column=0, columnspan=3, pady=5)
+        self.progress_var.set("Ready to convert - AI enhanced!")
+        ttk.Label(main_frame, textvariable=self.progress_var).grid(row=6, column=0, columnspan=3, pady=5)
         
         self.progress_bar = ttk.Progressbar(main_frame, mode='determinate')
-        self.progress_bar.grid(row=6, column=0, columnspan=3, sticky="ew", pady=5)
+        self.progress_bar.grid(row=7, column=0, columnspan=3, sticky="ew", pady=5)
         
         log_frame = ttk.LabelFrame(main_frame, text="Conversion Log", padding="5")
-        log_frame.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=10)
+        log_frame.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=10)
         
         self.log_text = tk.Text(log_frame, height=15, width=70)
         log_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
@@ -473,7 +609,8 @@ class PDFConverterGUI:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(7, weight=1)
+        main_frame.rowconfigure(8, weight=1)
+        ai_frame.columnconfigure(1, weight=1)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         
@@ -512,8 +649,16 @@ class PDFConverterGUI:
             messagebox.showerror("Error", "Input directory does not exist")
             return
         
+        # Setup OpenAI API key if provided
+        api_key = self.openai_key.get().strip()
+        if api_key:
+            self.converter.set_openai_key(api_key)
+            self.log_message("🤖 AI Vision enabled for flowchart analysis!")
+        else:
+            self.log_message("📝 Using OCR-only mode (no AI vision)")
+        
         self.log_text.delete(1.0, tk.END)
-        self.log_message("🔧 FIXED VERSION - Preventing filename conflicts!")
+        self.log_message("🔧 AI-ENHANCED VERSION - Preventing filename conflicts!")
         
         thread = threading.Thread(target=self.run_conversion)
         thread.daemon = True
@@ -529,24 +674,26 @@ class PDFConverterGUI:
                 self.update_progress
             )
             
-            self.progress_var.set("Conversion completed - All files saved safely!")
+            ai_status = "with AI flowchart analysis" if self.converter.use_ai_vision else "with OCR only"
+            self.progress_var.set(f"Conversion completed {ai_status} - All files saved safely!")
             success_count = results['success']
             failed_count = results['failed']
             completion_message = "Conversion completed! Success: " + str(success_count) + ", Failed: " + str(failed_count)
             self.log_message(completion_message)
             
             dialog_lines = [
-                "✅ Conversion completed with NO overwrites!",
+                "✅ AI-Enhanced conversion completed with NO overwrites!",
                 "",
                 "Total files: " + str(results['total']),
                 "Successful: " + str(results['success']),
                 "Failed: " + str(results['failed']),
                 "",
+                "🤖 Flowcharts analyzed with AI vision" if self.converter.use_ai_vision else "📝 OCR-only processing used",
                 "All files saved with unique names!"
             ]
             dialog_message = "\n".join(dialog_lines)
             
-            messagebox.showinfo("Conversion Complete - SAFE!", dialog_message)
+            messagebox.showinfo("AI-Enhanced Conversion Complete!", dialog_message)
             
         except Exception as e:
             error_message = "Error during conversion: " + str(e)
@@ -561,10 +708,11 @@ def main():
         print("Error: Python version check failed")
         sys.exit(1)
     
-    print("PDF to Markdown Converter for Colombian Clinical Guidelines - FIXED VERSION")
-    print("=" * 70)
-    print("🔧 This version prevents filename conflicts and overwrites!")
-    print("=" * 70)
+    print("PDF to Markdown Converter for Colombian Clinical Guidelines - AI ENHANCED")
+    print("=" * 75)
+    print("🤖 AI Vision for flowcharts + No filename conflicts!")
+    print("🔧 Hybrid: OCR first, then AI for complex images")
+    print("=" * 75)
     
     try:
         pytesseract.get_tesseract_version()
