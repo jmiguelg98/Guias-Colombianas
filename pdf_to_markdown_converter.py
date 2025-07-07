@@ -2,15 +2,17 @@
 """
 PDF to Markdown Converter for Colombian Clinical Guidelines
 Converts PDFs (normal and scanned) to LLM-friendly markdown files
+Extracts text, tables, figures, and metadata with Colombian medical entity recognition
 """
 
 import os
 import sys
 import re
+import json
 import logging
 import io
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -56,8 +58,11 @@ class PDFToMarkdownConverter:
             
             for page_num in range(len(doc)):
                 page = doc.load_page(page_num)
+                
+                # Try to extract text directly first
                 text = page.get_text()
                 
+                # If no text found, use OCR
                 if not text.strip():
                     logger.info(f"No text found on page {page_num + 1}, using OCR")
                     pix = page.get_pixmap()
@@ -65,7 +70,8 @@ class PDFToMarkdownConverter:
                     img = Image.open(io.BytesIO(img_data))
                     text = pytesseract.image_to_string(img, lang='spa+eng')
                 
-                full_text += f"\n\n--- Page {page_num + 1} ---\n\n{text}"
+                page_header = f"\n\n--- Page {page_num + 1} ---\n\n"
+                full_text += page_header + text
             
             doc.close()
             return full_text
@@ -85,9 +91,11 @@ class PDFToMarkdownConverter:
                     
                     for table_num, table in enumerate(tables):
                         if table:
+                            # Convert table to markdown
                             markdown_table = self.table_to_markdown(table)
-                            table_text = f"\n\n### Table {table_num + 1} (Page {page_num + 1})\n\n{markdown_table}\n\n"
-                            tables_markdown.append(table_text)
+                            table_header = f"\n\n### Table {table_num + 1} (Page {page_num + 1})\n\n"
+                            table_content = table_header + markdown_table + "\n\n"
+                            tables_markdown.append(table_content)
                             
         except Exception as e:
             logger.error(f"Error extracting tables from {pdf_path}: {e}")
@@ -99,6 +107,7 @@ class PDFToMarkdownConverter:
         if not table:
             return ""
         
+        # Clean and prepare table data
         cleaned_table = []
         for row in table:
             cleaned_row = [str(cell).strip() if cell else "" for cell in row]
@@ -107,13 +116,18 @@ class PDFToMarkdownConverter:
         if not cleaned_table:
             return ""
         
+        # Create markdown table
         markdown_lines = []
+        
+        # Header row
         header_row = "| " + " | ".join(cleaned_table[0]) + " |"
         markdown_lines.append(header_row)
         
+        # Separator row
         separator = "| " + " | ".join(["---"] * len(cleaned_table[0])) + " |"
         markdown_lines.append(separator)
         
+        # Data rows
         for row in cleaned_table[1:]:
             data_row = "| " + " | ".join(row) + " |"
             markdown_lines.append(data_row)
@@ -133,18 +147,22 @@ class PDFToMarkdownConverter:
                 
                 for img_index, img in enumerate(image_list):
                     try:
+                        # Extract image
                         xref = img[0]
                         pix = fitz.Pixmap(doc, xref)
                         
-                        if pix.n - pix.alpha < 4:
+                        if pix.n - pix.alpha < 4:  # GRAY or RGB
                             img_data = pix.tobytes("png")
                             img_pil = Image.open(io.BytesIO(img_data))
+                            
+                            # Use OCR to extract text from image
                             img_text = pytesseract.image_to_string(img_pil, lang='spa+eng')
                             
                             if img_text.strip():
-                                fig_text = f"\n\n### Figure {img_index + 1} (Page {page_num + 1})\n\n"
-                                fig_text += f"**Image Content (OCR):**\n{img_text.strip()}\n\n"
-                                image_descriptions.append(fig_text)
+                                figure_header = f"\n\n### Figure {img_index + 1} (Page {page_num + 1})\n\n"
+                                ocr_content = f"**Image Content (OCR):**\n{img_text.strip()}\n\n"
+                                figure_content = figure_header + ocr_content
+                                image_descriptions.append(figure_content)
                         
                         pix = None
                         
@@ -171,22 +189,26 @@ class PDFToMarkdownConverter:
         }
         
         try:
+            # Extract metadata using PyMuPDF
             doc = fitz.open(pdf_path)
             pdf_metadata = doc.metadata
             
+            # Extract from PDF metadata
             if pdf_metadata:
                 metadata['title'] = pdf_metadata.get('title', '')
                 metadata['author'] = pdf_metadata.get('author', '')
                 metadata['subject'] = pdf_metadata.get('subject', '')
                 metadata['keywords'] = pdf_metadata.get('keywords', '')
             
+            # Extract text from first few pages to find additional metadata
             first_pages_text = ""
-            for page_num in range(min(3, len(doc))):
+            for page_num in range(min(3, len(doc))):  # First 3 pages
                 page = doc.load_page(page_num)
                 first_pages_text += page.get_text()
             
             doc.close()
             
+            # Extract Colombian medical entities and year from content
             entity_patterns = [
                 r'Asociación Colombiana de [A-Za-z\s]+',
                 r'Sociedad Colombiana de [A-Za-z\s]+',
@@ -205,19 +227,22 @@ class PDFToMarkdownConverter:
                     metadata['entity'] = match.group()
                     break
             
+            # Extract year
             year_matches = re.findall(r'\b(19|20)\d{2}\b', first_pages_text)
             if year_matches:
+                # Get the most recent year that makes sense
                 years = [int(year) for year in year_matches]
                 current_year = datetime.now().year
                 valid_years = [year for year in years if 1990 <= year <= current_year]
                 if valid_years:
                     metadata['year'] = str(max(valid_years))
             
+            # If no title from metadata, try to extract from content
             if not metadata['title']:
                 lines = first_pages_text.split('\n')
-                for line in lines[:10]:
+                for line in lines[:10]:  # Check first 10 lines
                     line = line.strip()
-                    if len(line) > 20 and len(line) < 200:
+                    if len(line) > 20 and len(line) < 200:  # Reasonable title length
                         keywords = ['guía', 'consenso', 'recomendación', 'protocolo']
                         if any(keyword in line.lower() for keyword in keywords):
                             metadata['title'] = line
@@ -230,16 +255,20 @@ class PDFToMarkdownConverter:
     
     def generate_filename(self, metadata: Dict[str, str], original_filename: str) -> str:
         """Generate filename based on metadata"""
+        # Clean and prepare components
         title = metadata.get('title', '').strip()
         entity = metadata.get('entity', '').strip()
         year = metadata.get('year', '').strip()
         
+        # If no metadata found, use original filename
         if not any([title, entity, year]):
             return Path(original_filename).stem
         
+        # Create filename components
         filename_parts = []
         
         if title:
+            # Clean title and truncate if too long
             clean_title = re.sub(r'[^\w\s-]', '', title)
             clean_title = re.sub(r'\s+', '_', clean_title)
             if len(clean_title) > 50:
@@ -247,6 +276,7 @@ class PDFToMarkdownConverter:
             filename_parts.append(clean_title)
         
         if entity:
+            # Clean entity name
             clean_entity = re.sub(r'[^\w\s-]', '', entity)
             clean_entity = re.sub(r'\s+', '_', clean_entity)
             if len(clean_entity) > 30:
@@ -256,71 +286,29 @@ class PDFToMarkdownConverter:
         if year:
             filename_parts.append(year)
         
+        # Join parts with underscores
         filename = '_'.join(filename_parts)
         
+        # Ensure filename is not too long
         if len(filename) > 100:
             filename = filename[:100]
         
         return filename or Path(original_filename).stem
-    
-    def create_markdown_content(self, metadata: Dict[str, str], text_content: str, 
-                              tables: List[str], images: List[str], original_filename: str) -> str:
-        """Create formatted markdown content"""
-        
-        title = metadata.get('title', 'Clinical Guideline')
-        entity = metadata.get('entity', 'Unknown')
-        year = metadata.get('year', 'Unknown')
-        author = metadata.get('author', 'Not specified')
-        subject = metadata.get('subject', 'Not specified')
-        keywords = metadata.get('keywords', 'Not specified')
-        
-        content_parts = []
-        
-        # Header
-        content_parts.append(f"# {title}\n\n")
-        content_parts.append("## Document Information\n\n")
-        content_parts.append(f"**Original Filename:** {original_filename}\n")
-        content_parts.append(f"**Entity:** {entity}\n")
-        content_parts.append(f"**Year:** {year}\n")
-        content_parts.append(f"**Author:** {author}\n")
-        content_parts.append(f"**Subject:** {subject}\n")
-        content_parts.append(f"**Keywords:** {keywords}\n\n")
-        content_parts.append("---\n\n")
-        content_parts.append("## Document Content\n\n")
-        
-        # Main text
-        if text_content:
-            content_parts.append("### Main Text Content\n\n")
-            content_parts.append(text_content)
-            content_parts.append("\n\n")
-        
-        # Tables
-        if tables:
-            content_parts.append("## Tables\n\n")
-            content_parts.extend(tables)
-        
-        # Images
-        if images:
-            content_parts.append("## Figures and Images\n\n")
-            content_parts.extend(images)
-        
-        # Footer
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        content_parts.append(f"\n\n---\n\n*Document processed on {timestamp}*\n")
-        content_parts.append("*Converted from PDF to Markdown for LLM processing*\n")
-        
-        return ''.join(content_parts)
     
     def convert_pdf_to_markdown(self, pdf_path: str, output_dir: str) -> bool:
         """Convert a single PDF to markdown format"""
         try:
             logger.info(f"Converting {pdf_path}")
             
+            # Extract metadata
             metadata = self.extract_metadata(pdf_path)
+            
+            # Generate filename
             original_filename = Path(pdf_path).name
             new_filename = self.generate_filename(metadata, original_filename)
             output_path = os.path.join(output_dir, f"{new_filename}.md")
             
+            # Extract content
             logger.info("Extracting text content...")
             text_content = self.extract_text_with_ocr(pdf_path)
             
@@ -330,10 +318,12 @@ class PDFToMarkdownConverter:
             logger.info("Extracting and processing images...")
             images = self.extract_images_and_describe(pdf_path)
             
+            # Create markdown content
             markdown_content = self.create_markdown_content(
                 metadata, text_content, tables, images, original_filename
             )
             
+            # Save markdown file
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(markdown_content)
             
@@ -344,10 +334,74 @@ class PDFToMarkdownConverter:
             logger.error(f"Error converting {pdf_path}: {e}")
             return False
     
+    def create_markdown_content(self, metadata: Dict[str, str], text_content: str, 
+                              tables: List[str], images: List[str], original_filename: str) -> str:
+        """Create formatted markdown content"""
+        
+        # Get metadata values
+        title = metadata.get('title', 'Clinical Guideline')
+        entity = metadata.get('entity', 'Unknown')
+        year = metadata.get('year', 'Unknown')
+        author = metadata.get('author', 'Not specified')
+        subject = metadata.get('subject', 'Not specified')
+        keywords = metadata.get('keywords', 'Not specified')
+        
+        # Build content using list concatenation (Pylance-friendly)
+        content_parts = []
+        
+        # Document header
+        content_parts.append(f"# {title}")
+        content_parts.append("")
+        content_parts.append("## Document Information")
+        content_parts.append("")
+        content_parts.append(f"**Original Filename:** {original_filename}")
+        content_parts.append(f"**Entity:** {entity}")
+        content_parts.append(f"**Year:** {year}")
+        content_parts.append(f"**Author:** {author}")
+        content_parts.append(f"**Subject:** {subject}")
+        content_parts.append(f"**Keywords:** {keywords}")
+        content_parts.append("")
+        content_parts.append("---")
+        content_parts.append("")
+        content_parts.append("## Document Content")
+        content_parts.append("")
+        
+        # Main text content
+        if text_content:
+            content_parts.append("### Main Text Content")
+            content_parts.append("")
+            content_parts.append(text_content)
+            content_parts.append("")
+        
+        # Tables
+        if tables:
+            content_parts.append("## Tables")
+            content_parts.append("")
+            for table in tables:
+                content_parts.append(table)
+        
+        # Images/Figures
+        if images:
+            content_parts.append("## Figures and Images")
+            content_parts.append("")
+            for image in images:
+                content_parts.append(image)
+        
+        # Footer
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        content_parts.append("")
+        content_parts.append("---")
+        content_parts.append("")
+        content_parts.append(f"*Document processed on {timestamp}*")
+        content_parts.append("*Converted from PDF to Markdown for LLM processing*")
+        
+        return "\n".join(content_parts)
+    
     def convert_batch(self, input_dir: str, output_dir: str, progress_callback=None) -> Dict[str, int]:
         """Convert multiple PDFs in batch"""
         results = {'success': 0, 'failed': 0, 'total': 0}
         
+        # Find all PDF files
         pdf_files = []
         for ext in self.supported_formats:
             pdf_files.extend(Path(input_dir).glob(f'*{ext}'))
@@ -358,8 +412,10 @@ class PDFToMarkdownConverter:
             logger.warning(f"No PDF files found in {input_dir}")
             return results
         
+        # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
+        # Process each PDF
         for i, pdf_path in enumerate(pdf_files):
             try:
                 if progress_callback:
@@ -392,24 +448,30 @@ class PDFConverterGUI:
         
     def setup_ui(self):
         """Setup the user interface"""
+        # Main frame
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky="nsew")
         
+        # Title
         title_label = ttk.Label(main_frame, text="PDF to Markdown Converter", 
                                font=('Arial', 16, 'bold'))
         title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
         
+        # Input directory selection
         ttk.Label(main_frame, text="Input Directory (PDFs):").grid(row=1, column=0, sticky=tk.W, pady=5)
         ttk.Entry(main_frame, textvariable=self.input_dir, width=50).grid(row=1, column=1, padx=5, pady=5)
         ttk.Button(main_frame, text="Browse", command=self.select_input_dir).grid(row=1, column=2, pady=5)
         
+        # Output directory selection
         ttk.Label(main_frame, text="Output Directory (Markdown):").grid(row=2, column=0, sticky=tk.W, pady=5)
         ttk.Entry(main_frame, textvariable=self.output_dir, width=50).grid(row=2, column=1, padx=5, pady=5)
         ttk.Button(main_frame, text="Browse", command=self.select_output_dir).grid(row=2, column=2, pady=5)
         
+        # Convert button
         convert_button = ttk.Button(main_frame, text="Convert PDFs", command=self.start_conversion)
         convert_button.grid(row=3, column=0, columnspan=3, pady=20)
         
+        # Progress bar
         self.progress_var = tk.StringVar()
         self.progress_var.set("Ready to convert")
         ttk.Label(main_frame, textvariable=self.progress_var).grid(row=4, column=0, columnspan=3, pady=5)
@@ -417,6 +479,7 @@ class PDFConverterGUI:
         self.progress_bar = ttk.Progressbar(main_frame, mode='determinate')
         self.progress_bar.grid(row=5, column=0, columnspan=3, sticky="ew", pady=5)
         
+        # Log text area
         log_frame = ttk.LabelFrame(main_frame, text="Conversion Log", padding="5")
         log_frame.grid(row=6, column=0, columnspan=3, sticky="nsew", pady=10)
         
@@ -427,6 +490,7 @@ class PDFConverterGUI:
         self.log_text.grid(row=0, column=0, sticky="nsew")
         log_scrollbar.grid(row=0, column=1, sticky="ns")
         
+        # Configure grid weights
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
@@ -448,7 +512,9 @@ class PDFConverterGUI:
     
     def log_message(self, message: str):
         """Add message to log"""
-        self.log_text.insert(tk.END, f"{datetime.now().strftime('%H:%M:%S')} - {message}\n")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        log_entry = f"{timestamp} - {message}\n"
+        self.log_text.insert(tk.END, log_entry)
         self.log_text.see(tk.END)
         self.root.update()
     
@@ -456,8 +522,10 @@ class PDFConverterGUI:
         """Update progress bar and status"""
         progress = (current / total) * 100
         self.progress_bar['value'] = progress
-        self.progress_var.set(f"Processing {current}/{total}: {Path(current_file).name}")
-        self.log_message(f"Processing: {Path(current_file).name}")
+        filename = Path(current_file).name
+        status_text = f"Processing {current}/{total}: {filename}"
+        self.progress_var.set(status_text)
+        self.log_message(f"Processing: {filename}")
         self.root.update()
     
     def start_conversion(self):
@@ -470,8 +538,10 @@ class PDFConverterGUI:
             messagebox.showerror("Error", "Input directory does not exist")
             return
         
+        # Clear log
         self.log_text.delete(1.0, tk.END)
         
+        # Start conversion in separate thread
         thread = threading.Thread(target=self.run_conversion)
         thread.daemon = True
         thread.start()
@@ -487,18 +557,28 @@ class PDFConverterGUI:
                 self.update_progress
             )
             
+            # Show completion message
             self.progress_var.set("Conversion completed!")
-            self.log_message(f"Conversion completed! Success: {results['success']}, Failed: {results['failed']}")
+            success_count = results['success']
+            failed_count = results['failed']
+            completion_message = f"Conversion completed! Success: {success_count}, Failed: {failed_count}"
+            self.log_message(completion_message)
             
-            success_msg = f"Conversion completed!\n\n"
-            success_msg += f"Total files: {results['total']}\n"
-            success_msg += f"Successful: {results['success']}\n"
-            success_msg += f"Failed: {results['failed']}"
+            # Create completion dialog message
+            dialog_lines = [
+                "Conversion completed!",
+                "",
+                f"Total files: {results['total']}",
+                f"Successful: {results['success']}",
+                f"Failed: {results['failed']}"
+            ]
+            dialog_message = "\n".join(dialog_lines)
             
-            messagebox.showinfo("Conversion Complete", success_msg)
+            messagebox.showinfo("Conversion Complete", dialog_message)
             
         except Exception as e:
-            self.log_message(f"Error during conversion: {e}")
+            error_message = f"Error during conversion: {e}"
+            self.log_message(error_message)
             messagebox.showerror("Error", f"An error occurred during conversion: {e}")
     
     def run(self):
@@ -507,6 +587,7 @@ class PDFConverterGUI:
 
 def main():
     """Main function"""
+    # Check for required dependencies
     if not hasattr(sys, 'version_info'):
         print("Error: Python version check failed")
         sys.exit(1)
@@ -514,6 +595,7 @@ def main():
     print("PDF to Markdown Converter for Colombian Clinical Guidelines")
     print("=" * 60)
     
+    # Check if Tesseract is installed
     try:
         pytesseract.get_tesseract_version()
     except pytesseract.TesseractNotFoundError:
@@ -523,6 +605,7 @@ def main():
         print("- Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki")
         print("\nContinuing without OCR support...")
     
+    # Start GUI
     app = PDFConverterGUI()
     app.run()
 
