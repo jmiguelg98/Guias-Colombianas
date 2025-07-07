@@ -337,22 +337,23 @@ class PDFToMarkdownConverter:
         """Create formatted markdown content"""
         
         # Header with metadata
-        header = f"""# {metadata.get('title', 'Clinical Guideline')}
-
-## Document Information
-
-**Original Filename:** {original_filename}  
-**Entity:** {metadata.get('entity', 'Unknown')}  
-**Year:** {metadata.get('year', 'Unknown')}  
-**Author:** {metadata.get('author', 'Not specified')}  
-**Subject:** {metadata.get('subject', 'Not specified')}  
-**Keywords:** {metadata.get('keywords', 'Not specified')}  
-
----
-
-## Document Content
-
-"""
+        title = metadata.get('title', 'Clinical Guideline')
+        entity = metadata.get('entity', 'Unknown')
+        year = metadata.get('year', 'Unknown')
+        author = metadata.get('author', 'Not specified')
+        subject = metadata.get('subject', 'Not specified')
+        keywords = metadata.get('keywords', 'Not specified')
+        
+        header = f"# {title}\n\n"
+        header += "## Document Information\n\n"
+        header += f"**Original Filename:** {original_filename}\n"
+        header += f"**Entity:** {entity}\n"
+        header += f"**Year:** {year}\n"
+        header += f"**Author:** {author}\n"
+        header += f"**Subject:** {subject}\n"
+        header += f"**Keywords:** {keywords}\n\n"
+        header += "---\n\n"
+        header += "## Document Content\n\n"
         
         # Main text content
         content_sections = [header]
@@ -373,13 +374,9 @@ class PDFToMarkdownConverter:
             content_sections.extend(images)
         
         # Footer
-        footer = f"""
-
----
-
-*Document processed on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*  
-*Converted from PDF to Markdown for LLM processing*
-"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        footer = f"\n\n---\n\n*Document processed on {timestamp}*\n"
+        footer += "*Converted from PDF to Markdown for LLM processing*\n"
         
         content_sections.append(footer)
         
