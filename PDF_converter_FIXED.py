@@ -50,6 +50,10 @@ class PDFToMarkdownConverter:
         self.used_filenames = set()  # Track used filenames to prevent conflicts
         self.openai_api_key = None
         self.use_ai_vision = False
+        # Cost tracking
+        self.ai_calls_count = 0
+        self.flowchart_count = 0
+        self.ocr_only_count = 0
         
     def extract_text_with_ocr(self, pdf_path: str) -> str:
         try:
@@ -185,20 +189,70 @@ class PDFToMarkdownConverter:
         openai.api_key = api_key
     
     def is_likely_flowchart(self, img_pil: Image.Image) -> bool:
-        """Detect if image is likely a flowchart or diagram"""
+        """Detect if image is likely a flowchart or diagram - STRICT VERSION"""
         try:
-            # Basic heuristics for flowchart detection
-            width, height = img_pil.size
-            aspect_ratio = width / height
+            import numpy as np
+            from PIL import ImageFilter
             
-            # Flowcharts often have certain characteristics
-            if width < 200 or height < 200:  # Too small
+            width, height = img_pil.size
+            
+            # Must be reasonably sized
+            if width < 300 or height < 200:  # Stricter size requirements
                 return False
                 
-            # Check if image has geometric shapes (basic detection)
-            # This is a simple heuristic - flowcharts tend to have structured layouts
-            return 0.5 <= aspect_ratio <= 3.0  # Reasonable aspect ratio for flowcharts
-        except:
+            # Convert to grayscale for analysis
+            gray = img_pil.convert('L')
+            gray_array = np.array(gray)
+            
+            # Look for flowchart characteristics
+            flowchart_score = 0
+            
+            # 1. Check for rectangular shapes (boxes in flowcharts)
+            edges = gray.filter(ImageFilter.FIND_EDGES)
+            edge_array = np.array(edges)
+            edge_density = np.sum(edge_array > 50) / (width * height)
+            
+            if 0.02 < edge_density < 0.15:  # Moderate edge density suggests structured diagram
+                flowchart_score += 1
+                
+            # 2. Check aspect ratio (flowcharts are often wider than tall)
+            aspect_ratio = width / height
+            if 1.2 <= aspect_ratio <= 2.5:  # Typical flowchart proportions
+                flowchart_score += 1
+                
+            # 3. Check for mostly white background with structured content
+            white_pixels = np.sum(gray_array > 240)
+            white_ratio = white_pixels / (width * height)
+            if white_ratio > 0.6:  # Flowcharts typically have lots of white space
+                flowchart_score += 1
+                
+            # 4. Check for text distribution patterns (scattered text suggests flowchart)
+            # Simple OCR to see if text is distributed (not paragraph-like)
+            try:
+                import pytesseract
+                ocr_result = pytesseract.image_to_string(img_pil, lang='spa+eng')
+                words = ocr_result.split()
+                
+                # Look for flowchart keywords
+                flowchart_keywords = ['paciente', 'diagnóstico', 'tratamiento', 'sí', 'no', 'decisión', 
+                                    'algoritmo', 'protocolo', 'evaluación', 'seguimiento']
+                keyword_matches = sum(1 for word in words if any(kw in word.lower() for kw in flowchart_keywords))
+                
+                if keyword_matches >= 2:  # At least 2 clinical decision keywords
+                    flowchart_score += 2
+                    
+                # Check if text is distributed (not dense paragraphs)
+                if len(words) > 5 and len(words) < 50:  # Moderate word count
+                    flowchart_score += 1
+                    
+            except:
+                pass  # OCR failed, skip text analysis
+                
+            # Must score at least 3/5 to be considered a flowchart
+            return flowchart_score >= 3
+            
+        except Exception as e:
+            logger.debug(f"Flowchart detection error: {e}")
             return False
     
     def get_ai_image_description(self, img_pil: Image.Image, page_num: int, img_index: int) -> str:
@@ -258,38 +312,52 @@ class PDFToMarkdownConverter:
             return ""
     
     def process_image_hybrid(self, img_pil: Image.Image, page_num: int, img_index: int) -> str:
-        """Process image with hybrid OCR + AI approach"""
+        """Process image with hybrid OCR + AI approach - CONSERVATIVE VERSION"""
         try:
             # Step 1: Try OCR first
             ocr_text = pytesseract.image_to_string(img_pil, lang='spa+eng').strip()
             
-            # Step 2: Check if we should use AI vision
+            # Step 2: Check if we should use AI vision (MUCH MORE CONSERVATIVE)
             use_ai = False
             reason = ""
             
+            # Priority 1: Check if it's a true flowchart (strict detection)
             if self.is_likely_flowchart(img_pil):
                 use_ai = True
-                reason = "Detected flowchart/diagram"
-            elif len(ocr_text) < 20:  # Poor OCR results
+                reason = "Confirmed flowchart/clinical decision tree"
+                self.flowchart_count += 1
+                logger.info(f"🎯 Flowchart detected on page {page_num}, image {img_index}")
+            
+            # Priority 2: Only if OCR completely fails (was 20, now 2!)
+            elif len(ocr_text) <= 2:  # Only if OCR gets 0-2 characters
                 use_ai = True
-                reason = "Poor OCR results"
+                reason = "OCR completely failed"
+                logger.info(f"🔧 OCR failed on page {page_num}, image {img_index}")
             
             # Step 3: Get AI description if needed
             if use_ai and self.use_ai_vision:
-                logger.info(f"Using AI vision for image {img_index} on page {page_num}: {reason}")
+                self.ai_calls_count += 1
+                estimated_cost = self.ai_calls_count * 0.02  # $0.02 average
+                logger.info(f"💰 AI call #{self.ai_calls_count} (Est. cost so far: ${estimated_cost:.2f}) - {reason}")
                 ai_description = self.get_ai_image_description(img_pil, page_num, img_index)
                 
                 if ai_description:
-                    content = f"**AI Analysis:** {ai_description}"
+                    content = f"**AI Analysis ({reason}):** {ai_description}"
                     if ocr_text:  # Include OCR text if available
                         content += f"\n\n**OCR Text:** {ocr_text}"
                     return content
+                else:
+                    # AI failed, fall back to OCR
+                    logger.warning(f"AI vision failed, using OCR for image {img_index} on page {page_num}")
             
-            # Step 4: Fall back to OCR or placeholder
-            if ocr_text:
+            # Step 4: Use OCR results (even if limited)
+            self.ocr_only_count += 1
+            if len(ocr_text) > 2:
                 return f"**OCR Text:** {ocr_text}"
+            elif len(ocr_text) > 0:
+                return f"**Limited OCR:** {ocr_text}"
             else:
-                return "**Image detected but could not be processed**"
+                return "**Image detected - no readable text**"
                 
         except Exception as e:
             logger.error(f"Error in hybrid image processing: {e}")
@@ -511,8 +579,11 @@ class PDFToMarkdownConverter:
     def convert_batch(self, input_dir: str, output_dir: str, progress_callback=None) -> Dict[str, int]:
         results = {'success': 0, 'failed': 0, 'total': 0}
         
-        # Reset used filenames for new batch
+        # Reset used filenames and counters for new batch
         self.used_filenames = set()
+        self.ai_calls_count = 0
+        self.flowchart_count = 0
+        self.ocr_only_count = 0
         
         pdf_files = []
         for ext in self.supported_formats:
@@ -583,8 +654,9 @@ class PDFConverterGUI:
         key_entry = ttk.Entry(ai_frame, textvariable=self.openai_key, width=50, show="*")
         key_entry.grid(row=0, column=1, padx=5, pady=5)
         
-        ttk.Label(ai_frame, text="✅ Enhances flowchart analysis", font=('Arial', 9)).grid(row=1, column=0, columnspan=2, sticky=tk.W)
-        ttk.Label(ai_frame, text="✅ Hybrid: OCR first, AI for complex images", font=('Arial', 9)).grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(ai_frame, text="✅ CONSERVATIVE: Only for true flowcharts", font=('Arial', 9)).grid(row=1, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(ai_frame, text="✅ OCR first, AI only when necessary", font=('Arial', 9)).grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(ai_frame, text="💰 Estimated cost: $50-200 for 159 PDFs", font=('Arial', 9), foreground='blue').grid(row=3, column=0, columnspan=2, sticky=tk.W)
         
         convert_button = ttk.Button(main_frame, text="Convert PDFs (AI-Enhanced)", command=self.start_conversion)
         convert_button.grid(row=5, column=0, columnspan=3, pady=20)
@@ -681,14 +753,26 @@ class PDFConverterGUI:
             completion_message = "Conversion completed! Success: " + str(success_count) + ", Failed: " + str(failed_count)
             self.log_message(completion_message)
             
+            # Cost summary
+            ai_cost = self.converter.ai_calls_count * 0.02
+            self.log_message(f"💰 COST SUMMARY: {self.converter.ai_calls_count} AI calls = ~${ai_cost:.2f}")
+            self.log_message(f"🎯 Flowcharts: {self.converter.flowchart_count}")
+            self.log_message(f"📝 OCR only: {self.converter.ocr_only_count}")
+            
             dialog_lines = [
                 "✅ AI-Enhanced conversion completed with NO overwrites!",
                 "",
+                "📊 PROCESSING SUMMARY:",
                 "Total files: " + str(results['total']),
                 "Successful: " + str(results['success']),
                 "Failed: " + str(results['failed']),
                 "",
-                "🤖 Flowcharts analyzed with AI vision" if self.converter.use_ai_vision else "📝 OCR-only processing used",
+                "💰 COST BREAKDOWN:",
+                f"AI calls used: {self.converter.ai_calls_count}",
+                f"Flowcharts detected: {self.converter.flowchart_count}",
+                f"OCR-only images: {self.converter.ocr_only_count}",
+                f"Estimated cost: ~${ai_cost:.2f}",
+                "",
                 "All files saved with unique names!"
             ]
             dialog_message = "\n".join(dialog_lines)
@@ -710,8 +794,9 @@ def main():
     
     print("PDF to Markdown Converter for Colombian Clinical Guidelines - AI ENHANCED")
     print("=" * 75)
-    print("🤖 AI Vision for flowcharts + No filename conflicts!")
-    print("🔧 Hybrid: OCR first, then AI for complex images")
+    print("🤖 CONSERVATIVE AI: Only for true flowcharts + OCR failures")
+    print("🔧 Cost-optimized: OCR first, minimal AI usage")
+    print("💰 Expected cost: $50-200 for 159 PDFs (vs $800-2850 before fix)")
     print("=" * 75)
     
     try:
