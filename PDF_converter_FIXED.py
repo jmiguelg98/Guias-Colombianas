@@ -318,27 +318,21 @@ class PDFToMarkdownConverter:
             return ""
     
     def process_image_hybrid(self, img_pil: Image.Image, page_num: int, img_index: int) -> str:
-        """Process image with hybrid OCR + AI approach - CONSERVATIVE VERSION"""
+        """Process image: AI for flowcharts only, OCR for everything else"""
         try:
             # Step 1: Try OCR first
             ocr_text = pytesseract.image_to_string(img_pil, lang='spa+eng').strip()
             
-            # Step 2: Check if we should use AI vision (MUCH MORE CONSERVATIVE)
+            # Step 2: Check if we should use AI vision (FLOWCHARTS ONLY!)
             use_ai = False
             reason = ""
             
-            # Priority 1: Check if it's a true flowchart (strict detection)
+            # ONLY use AI for confirmed flowcharts - no OCR failure fallback
             if self.is_likely_flowchart(img_pil):
                 use_ai = True
                 reason = "Confirmed flowchart/clinical decision tree"
                 self.flowchart_count += 1
-                logger.info(f"🎯 Flowchart detected on page {page_num}, image {img_index}")
-            
-            # Priority 2: Only if OCR completely fails (was 20, now 2!)
-            elif len(ocr_text) <= 2:  # Only if OCR gets 0-2 characters
-                use_ai = True
-                reason = "OCR completely failed"
-                logger.info(f"🔧 OCR failed on page {page_num}, image {img_index}")
+                logger.info(f"🎯 Flowchart detected on page {page_num}, image {img_index} - Using AI")
             
             # Step 3: Get AI description if needed
             if use_ai and self.use_ai_vision:
@@ -356,14 +350,14 @@ class PDFToMarkdownConverter:
                     # AI failed, fall back to OCR
                     logger.warning(f"AI vision failed, using OCR for image {img_index} on page {page_num}")
             
-            # Step 4: Use OCR results (even if limited)
+            # Step 4: Use OCR results for all non-flowchart images
             self.ocr_only_count += 1
-            if len(ocr_text) > 2:
+            if len(ocr_text) > 10:
                 return f"**OCR Text:** {ocr_text}"
             elif len(ocr_text) > 0:
                 return f"**Limited OCR:** {ocr_text}"
             else:
-                return "**Image detected - no readable text**"
+                return "**Image detected - no readable text found**"
                 
         except Exception as e:
             logger.error(f"Error in hybrid image processing: {e}")
@@ -660,9 +654,9 @@ class PDFConverterGUI:
         key_entry = ttk.Entry(ai_frame, textvariable=self.openai_key, width=50, show="*")
         key_entry.grid(row=0, column=1, padx=5, pady=5)
         
-        ttk.Label(ai_frame, text="✅ CONSERVATIVE: Only for true flowcharts", font=('Arial', 9)).grid(row=1, column=0, columnspan=2, sticky=tk.W)
-        ttk.Label(ai_frame, text="✅ OCR first, AI only when necessary", font=('Arial', 9)).grid(row=2, column=0, columnspan=2, sticky=tk.W)
-        ttk.Label(ai_frame, text="💰 Estimated cost: $50-200 for 159 PDFs", font=('Arial', 9), foreground='blue').grid(row=3, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(ai_frame, text="✅ FLOWCHARTS ONLY: No OCR failure fallback", font=('Arial', 9)).grid(row=1, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(ai_frame, text="✅ Detects 'flujograma' and clinical diagrams", font=('Arial', 9)).grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        ttk.Label(ai_frame, text="💰 Estimated cost: $20-100 for 159 PDFs", font=('Arial', 9), foreground='blue').grid(row=3, column=0, columnspan=2, sticky=tk.W)
         
         convert_button = ttk.Button(main_frame, text="Convert PDFs (AI-Enhanced)", command=self.start_conversion)
         convert_button.grid(row=5, column=0, columnspan=3, pady=20)
@@ -733,7 +727,7 @@ class PDFConverterGUI:
             self.converter.set_openai_key(api_key)
             self.log_message("🤖 AI Vision enabled for flowchart analysis!")
         else:
-            self.log_message("📝 Using OCR-only mode (no AI vision)")
+            self.log_message("📝 Using OCR-only mode (AI disabled)")
         
         self.log_text.delete(1.0, tk.END)
         self.log_message("🔧 AI-ENHANCED VERSION - Preventing filename conflicts!")
@@ -800,9 +794,9 @@ def main():
     
     print("PDF to Markdown Converter for Colombian Clinical Guidelines - AI ENHANCED")
     print("=" * 75)
-    print("🤖 CONSERVATIVE AI: Only for true flowcharts + OCR failures")
-    print("🔧 Cost-optimized: OCR first, minimal AI usage")
-    print("💰 Expected cost: $50-200 for 159 PDFs (vs $800-2850 before fix)")
+    print("🤖 FLOWCHARTS ONLY: AI vision for 'flujograma' detection only")
+    print("🔧 Cost-optimized: OCR for all other images (no AI fallback)")
+    print("💰 Expected cost: $20-100 for 159 PDFs (minimal AI usage)")
     print("=" * 75)
     
     try:
