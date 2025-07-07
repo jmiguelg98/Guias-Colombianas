@@ -233,13 +233,19 @@ class PDFToMarkdownConverter:
                 ocr_result = pytesseract.image_to_string(img_pil, lang='spa+eng')
                 words = ocr_result.split()
                 
-                # Look for flowchart keywords
-                flowchart_keywords = ['paciente', 'diagnóstico', 'tratamiento', 'sí', 'no', 'decisión', 
-                                    'algoritmo', 'protocolo', 'evaluación', 'seguimiento']
-                keyword_matches = sum(1 for word in words if any(kw in word.lower() for kw in flowchart_keywords))
+                # Look for flowchart keywords - FLUJOGRAMA is the key indicator!
+                primary_keywords = ['flujograma', 'diagrama de flujo', 'algoritmo']  # Strongest indicators
+                secondary_keywords = ['paciente', 'diagnóstico', 'tratamiento', 'sí', 'no', 'decisión', 
+                                    'protocolo', 'evaluación', 'seguimiento']
                 
-                if keyword_matches >= 2:  # At least 2 clinical decision keywords
-                    flowchart_score += 2
+                # Check for primary flowchart keywords (most important)
+                primary_matches = sum(1 for word in words if any(kw in word.lower() for kw in primary_keywords))
+                secondary_matches = sum(1 for word in words if any(kw in word.lower() for kw in secondary_keywords))
+                
+                if primary_matches >= 1:  # Found "flujograma" or "algoritmo" - strong indicator!
+                    flowchart_score += 3  # High score for explicit flowchart terms
+                elif secondary_matches >= 2:  # At least 2 clinical decision keywords
+                    flowchart_score += 1  # Lower score for general clinical terms
                     
                 # Check if text is distributed (not dense paragraphs)
                 if len(words) > 5 and len(words) < 50:  # Moderate word count
