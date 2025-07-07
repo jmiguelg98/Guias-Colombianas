@@ -132,15 +132,30 @@ class PDFToMarkdownConverterCLI:
                         xref = img[0]
                         pix = fitz.Pixmap(doc, xref)
                         
-                        if pix.n - pix.alpha < 4:
-                            img_data = pix.tobytes("png")
-                            img_pil = Image.open(io.BytesIO(img_data))
-                            img_text = pytesseract.image_to_string(img_pil, lang='spa+eng')
-                            
-                            if img_text.strip():
+                        # Handle CMYK and other color spaces
+                        if pix.n - pix.alpha >= 4:  # CMYK or other multi-channel
+                            logger.info(f"Converting CMYK/multi-channel image to RGB on page {page_num + 1}")
+                            # Convert to RGB color space
+                            pix = fitz.Pixmap(fitz.csRGB, pix)
+                        
+                        # Only process if we have a valid RGB/grayscale image
+                        if pix.n - pix.alpha <= 3:
+                            try:
+                                img_data = pix.tobytes("png")
+                                img_pil = Image.open(io.BytesIO(img_data))
+                                img_text = pytesseract.image_to_string(img_pil, lang='spa+eng')
+                                
+                                if img_text.strip():
+                                    figure_header = f"\n\n### Figure {img_index + 1} (Page {page_num + 1})\n\n"
+                                    ocr_content = f"**Image Content (OCR):**\n{img_text.strip()}\n\n"
+                                    figure_content = figure_header + ocr_content
+                                    image_descriptions.append(figure_content)
+                            except Exception as img_error:
+                                logger.warning(f"Could not process image {img_index} on page {page_num + 1}: {img_error}")
+                                # Add placeholder for unprocessable image
                                 figure_header = f"\n\n### Figure {img_index + 1} (Page {page_num + 1})\n\n"
-                                ocr_content = f"**Image Content (OCR):**\n{img_text.strip()}\n\n"
-                                figure_content = figure_header + ocr_content
+                                placeholder_content = "**Image detected but could not be processed for OCR**\n\n"
+                                figure_content = figure_header + placeholder_content
                                 image_descriptions.append(figure_content)
                         
                         pix = None
