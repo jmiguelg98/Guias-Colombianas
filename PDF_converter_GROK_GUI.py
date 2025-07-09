@@ -43,9 +43,9 @@ class GrokCostTracker:
         self.image_calls = 0
         self.text_calls = 0
         
-        # Grok pricing (approximate - check current rates)
-        self.image_analysis_cost = 0.015  # Per image analysis
-        self.text_analysis_cost = 0.002   # Per text analysis
+        # Grok-2-vision-1212 pricing (from OpenRouter)
+        self.image_analysis_cost = 0.0036  # $3.60 per 1K images = $0.0036 per image
+        self.text_analysis_cost = 0.002    # Estimated text analysis cost
     
     def add_image_analysis(self):
         """Add cost for image analysis"""
@@ -114,7 +114,7 @@ class GrokVisionAnalyzer:
             }
             
             payload = {
-                "model": "grok-vision-beta",
+                "model": "grok-2-vision-1212",
                 "messages": [
                     {
                         "role": "user",
@@ -584,7 +584,7 @@ class GrokPDFAnalyzer:
         content_parts.append("")
         content_parts.append(f"**Original Filename:** {original_filename}")
         content_parts.append(f"**Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        content_parts.append(f"**Analysis Method:** Grok Vision API")
+        content_parts.append(f"**Analysis Method:** Grok-2-Vision-1212 API")
         content_parts.append("")
         content_parts.append("---")
         content_parts.append("")
@@ -622,7 +622,7 @@ class GrokPDFAnalyzer:
         summary = self.vision_analyzer.get_analysis_summary()
         content_parts.append("## 🚀 Grok Processing Summary")
         content_parts.append("")
-        content_parts.append(f"**Analysis Method:** Grok Vision API")
+        content_parts.append(f"**Analysis Method:** Grok-2-Vision-1212 API")
         content_parts.append(f"**Total Cost:** ${summary['total_cost']:.2f}")
         content_parts.append(f"**Images Analyzed:** {summary['total_analyses']}")
         content_parts.append(f"**Tables Found:** {summary['tables_found']}")
@@ -690,7 +690,7 @@ class GrokPDFAnalyzerGUI:
         ttk.Label(info_frame, text="📊 Comprehensive table analysis and data extraction", font=('Arial', 9)).grid(row=1, column=0, sticky=tk.W)
         ttk.Label(info_frame, text="🌳 Detailed flowchart and algorithm interpretation", font=('Arial', 9)).grid(row=2, column=0, sticky=tk.W)
         ttk.Label(info_frame, text="🔍 Layout analysis and structure recognition", font=('Arial', 9)).grid(row=3, column=0, sticky=tk.W)
-        ttk.Label(info_frame, text="💰 Cost tracking: ~$0.015 per image analysis", font=('Arial', 9)).grid(row=4, column=0, sticky=tk.W)
+        ttk.Label(info_frame, text="💰 Cost tracking: ~$0.0036 per image analysis", font=('Arial', 9)).grid(row=4, column=0, sticky=tk.W)
         
         # Convert button
         convert_button = ttk.Button(main_frame, text="Start Grok Analysis", command=self.start_conversion)
